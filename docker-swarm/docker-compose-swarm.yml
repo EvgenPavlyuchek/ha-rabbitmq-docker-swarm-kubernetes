@@ -1,0 +1,65 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    hostname: "rabbitmq{{.Task.Slot}}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cat <<EOF > /etc/rabbitmq/rabbitmq.conf
+        vm_memory_high_watermark.absolute = 1024MiB
+        disk_free_limit.absolute = 5GB
+        loopback_users.guest = false
+        loopback_users.admin = false
+        cluster_partition_handling = autoheal
+        cluster_formation.peer_discovery_backend = rabbit_peer_discovery_classic_config
+        cluster_formation.classic_config.nodes.1 = rabbit@rabbitmq1
+        cluster_formation.classic_config.nodes.2 = rabbit@rabbitmq2
+        cluster_formation.classic_config.nodes.3 = rabbit@rabbitmq3
+        EOF
+        if [ $$HOSTNAME = 'rabbitmq1' ]; then
+          sh -c "
+            sleep 10s
+            while ! rabbitmq-diagnostics -q ping; do
+              sleep 3
+              echo 'Waiting...'
+            done
+            sleep 10s
+            rabbitmqctl set_policy ha-all \".*\" '{\"ha-mode\":\"all\",\"ha-sync-mode\":\"automatic\"}'
+          " &
+        fi
+        exec docker-entrypoint.sh rabbitmq-server
+    environment:
+      RABBITMQ_ERLANG_COOKIE: P6jhgjghjPuJ+9KMq+WqEzBA==
+      RABBITMQ_DEFAULT_USER: rabbitmq
+      RABBITMQ_DEFAULT_PASS: rabbitmq
+    ports:
+      # - "5672:5672"   # amqp
+      - "15672:15672" # web ui
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 30s
+    deploy:
+      replicas: 3
+      placement:
+        max_replicas_per_node: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        delay: 60s
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+      restart_policy:
+        condition: any
+        delay: 30s
+        max_attempts: 5
+        window: 210s
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
